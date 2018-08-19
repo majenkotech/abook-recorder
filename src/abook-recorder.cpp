@@ -391,11 +391,6 @@ void clearScreen() {
     SDL_FillRect(_display, NULL, 0xFF000000);
 }
 
-void updateScreen() {
-    SDL_BlitSurface(_display, NULL, _backing, NULL);
-    SDL_UpdateWindowSurface(_window);
-}
-
 void text(const char *message, int x, int y) {
 	SDL_Surface *fn = TTF_RenderText_Blended(filenameFont, message, white);
 	SDL_Rect r;
@@ -409,7 +404,7 @@ void text(const char *message, int x, int y) {
 
 void displaySummary() {
     char temp[1024];
-    clearScreen();
+//    clearScreen();
 
 
     if (samples > 0) {
@@ -465,21 +460,26 @@ void displaySummary() {
 
 
     sprintf(temp, "Session: %s", filename);
-    text(temp, 20, 20);
-    sprintf(temp, "Segments: %d", segmentNo);
-    text(temp, 20, 40);
-    sprintf(temp, "Noise floor: %d", noiseFloor);
     text(temp, 20, 60);
+    sprintf(temp, "Segments: %d", segmentNo);
+    text(temp, 20, 80);
+    sprintf(temp, "Noise floor: %d", noiseFloor);
+    text(temp, 20, 100);
 
-    text("Press N to record room noise", 20, 100);
-    text("Press C to combine session to WAV", 20, 120);
-    text("Press R to record a new segment", 20, 140);
-    text("Press D to delete last segment", 20, 160);
-    text("Press Q to quit", 20, 180);
+    text("Press N to record room noise", 20, 120);
+    text("Press C to combine session to WAV", 20, 140);
+    text("Press R to record a new segment", 20, 160);
+    text("Press D to delete last segment", 20, 180);
+    text("Press Q to quit", 20, 200);
 
-    updateScreen();
+//    updateScreen();
 }
 
+void updateScreen() {
+    displaySummary();
+    SDL_BlitSurface(_display, NULL, _backing, NULL);
+    SDL_UpdateWindowSurface(_window);
+}
 
 void recordRoomNoise() {
 	noiseFloor = 0;
@@ -489,8 +489,7 @@ void recordRoomNoise() {
 
 	SDL_FillRect(_display, NULL, 0xFFFF0000);
 
-	text("Recording Room Noise", 20, 20);
-	text("Be Silent!", 20, 40);
+	text("Recording Room Noise. Be Silent!", 20, 20);
 	
 	updateScreen();
 	recording = 1;
@@ -620,7 +619,9 @@ void stopRecording() {
 	write(recordFd, &recordingBuffer[firstSample * 2], validSamples * 4);
 
 	close(recordFd);
-    displaySummary();
+   // displaySummary();
+	clearScreen();
+	updateScreen();
 	samples = 0;
 	recordingRoomNoise = 0;
 	recording = 0;
@@ -662,6 +663,8 @@ void undoRecording() {
 	if (segmentNo > 0) {
 		segmentNo--;
 	}
+	clearScreen();
+	updateScreen();
 }
 
 int addRoomNoise(int fd, int seconds, int16_t *roomNoiseSamples) {
@@ -725,8 +728,6 @@ void combineSession() {
 
 	nsamp += addRoomNoise(masterFd, 2, roomNoiseSamples);
 
-    printf("Segments: %d\n", segmentNo);
-
 	for (int i = 1; i <= segmentNo; i++) {
 		sprintf(temp, "%s/segment-%04d.wav", filename, i);
 		nsamp += appendFile(masterFd, temp);
@@ -742,8 +743,6 @@ void combineSession() {
 	clearScreen();
 	text("Combining complete.", 20, 20);
 	updateScreen();
-
-
 }
 
 void reopenSession() {
@@ -822,27 +821,29 @@ int main (int argc, char *argv[]) {
 				quit = 1;
 				break;
 			case SDL_KEYDOWN:
-				switch (event.key.keysym.sym) {
-					case SDLK_c:
-						if (!recording) {
-							combineSession();
-						}
-						break;
-					case SDLK_n:
-						if (!recording)
-							recordRoomNoise();
-						break;
-					case SDLK_r:
-						if (!recording) 
-							startRecording();
-						break;
-					case SDLK_q:
-						quit = 1;
-						break;
-					case SDLK_d:
-						if (!recording)
-							undoRecording();
-						break;
+				if (event.key.repeat == 0) {
+					switch (event.key.keysym.sym) {
+						case SDLK_c:
+							if (!recording) {
+								combineSession();
+							}
+							break;
+						case SDLK_n:
+							if (!recording)
+								recordRoomNoise();
+							break;
+						case SDLK_r:
+							if (!recording) 
+								startRecording();
+							break;
+						case SDLK_q:
+							quit = 1;
+							break;
+						case SDLK_d:
+							if (!recording)
+								undoRecording();
+							break;
+					}
 				}
 				break;
 			case SDL_KEYUP:
