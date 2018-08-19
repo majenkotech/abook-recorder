@@ -415,30 +415,52 @@ void displaySummary() {
         for (int i = 0; i < samples; i += div) {
             int maxval = 0;
             int minval = 0;
+            int upav = 0;
+	    int upnum = 0;
+            int downav = 0;
+	    int downnum = 0;
             for (int j = 0; j < div; j++) {
-                if (recordingBuffer[(i + j) * 2] > maxval) {
-                    maxval = recordingBuffer[(i + j) * 2];
-                }
-                if (recordingBuffer[(i + j) * 2 + 1] > maxval) {
-                    maxval = recordingBuffer[(i + j) * 2 + 1];
-                }
-                if (recordingBuffer[(i + j) * 2] < minval) {
-                    minval = recordingBuffer[(i + j) * 2];
-                }
-                if (recordingBuffer[(i + j) * 2 + 1] < minval) {
-                    minval = recordingBuffer[(i + j) * 2 + 1];
-                }
+		int left = recordingBuffer[(i + j) * 2];
+		int right = recordingBuffer[(i + j) * 2 + 1];
+
+                if (left > maxval) maxval = left;
+		if (right > maxval) maxval = right;
+		if (left < minval) minval = left;
+		if (right < minval) minval = right;
+		if (left > 0) { upav += left; upnum++; }
+		if (left < 0) { downav += left; downnum++; }
+		if (right > 0) { upav += right; upnum++; }
+		if (right < 0) { downav += right; downnum++; }
+            }
+
+	    if (upnum > 0) {
+		    upav /= upnum;
+            } else {
+                    upav = 0;
+            }
+	    if (downnum > 0) {
+		    downav /= downnum;
+            } else {
+                    downav = 0;
             }
 
             maxval /= 250;
             minval /= 250;
 
+            upav /= 250;
+            downav /= 250;
+
             r.x = px;
             r.w = 1;
             r.y = 120 - maxval;
             r.h = abs(maxval - minval) + 1;
-
             SDL_FillRect(_display, &r, 0xFF004080);
+
+            r.x = px;
+            r.w = 1;
+            r.y = 120 - upav;
+            r.h = abs(upav - downav) + 1;
+            SDL_FillRect(_display, &r, 0xFF4080F0);
 
             px++;
         }
