@@ -443,8 +443,6 @@ void displaySummary() {
             r.y = 120 - maxval;
             r.h = abs(maxval - minval) + 1;
 
-            printf("%d\n", r.h);
-
             SDL_FillRect(_display, &r, 0xFF004080);
 
             px++;
@@ -470,7 +468,10 @@ void displaySummary() {
     text(temp, 20, 20);
     sprintf(temp, "Segments: %d", segmentNo);
     text(temp, 20, 40);
-    text("Press N to start new session", 20, 100);
+    sprintf(temp, "Noise floor: %d", noiseFloor);
+    text(temp, 20, 60);
+
+    text("Press N to record room noise", 20, 100);
     text("Press C to combine session to WAV", 20, 120);
     text("Press R to record a new segment", 20, 140);
     text("Press D to delete last segment", 20, 160);
@@ -480,11 +481,9 @@ void displaySummary() {
 }
 
 
-void startNewSession() {
+void recordRoomNoise() {
 	noiseFloor = 0;
 	samples = 0;
-	segmentNo = 0;
-
 
 	mkdir(filename, 0777);
 
@@ -499,6 +498,13 @@ void startNewSession() {
 }
 
 void startRecording() {
+
+    if (noiseFloor == 0) {
+        clearScreen();
+        text("No room noise recorded!", 20, 20);
+        updateScreen();
+        return;
+    }
 	samples = 0;
 
 	segmentNo++;
@@ -512,6 +518,33 @@ void startRecording() {
 	updateScreen();
 	recording = 1;
 	recordingRoomNoise = 0;
+}
+
+int loadFileToBuffer(const char *fn) {
+    int afd = open(fn, O_RDONLY);
+    struct wav header;
+    read(afd, &header, sizeof(header));
+    read(afd, recordingBuffer, header.data_chunksize);
+    close(afd);
+    return header.data_chunksize / 4;
+}
+
+void loadRoomNoise() {
+    char temp[1024];
+    sprintf(temp, "%s/room-noise.wav", filename);
+    samples = loadFileToBuffer(temp);
+    noiseFloor = 0;
+    for (int i = 0; i < samples; i++) {
+        if (abs(recordingBuffer[i * 2]) > noiseFloor) {
+            noiseFloor = abs(recordingBuffer[i * 2]);
+        }
+        if (abs(recordingBuffer[i * 2 + 1]) > noiseFloor) {
+            noiseFloor = abs(recordingBuffer[i * 2 + 1]);
+        }
+    }
+
+    noiseFloor *= 10;
+    noiseFloor /= 9;
 }
 
 void stopRecording() {
@@ -532,6 +565,9 @@ void stopRecording() {
 				noiseFloor = abs(recordingBuffer[i * 2 + 1]);
 			}
 		}
+
+        noiseFloor *= 10;
+        noiseFloor /= 9;
 
 		sprintf(temp, "%s/room-noise.wav", filename);
 
@@ -629,7 +665,12 @@ void undoRecording() {
 }
 
 int addRoomNoise(int fd, int seconds, int16_t *roomNoiseSamples) {
-	write(fd, roomNoiseSamples, 48000 * 2 * seconds);
+    int len = 48000 * seconds;
+    int maxsamp = 48000 * 5 - len;
+
+    int pos = rand() % maxsamp;
+    
+	write(fd, &roomNoiseSamples[pos * 2], 48000 * 4 * seconds);
 	return 48000 * seconds;
 }
 
@@ -684,7 +725,9 @@ void combineSession() {
 
 	nsamp += addRoomNoise(masterFd, 2, roomNoiseSamples);
 
-	for (int i = 1; i < segmentNo; i++) {
+    printf("Segments: %d\n", segmentNo);
+
+	for (int i = 1; i <= segmentNo; i++) {
 		sprintf(temp, "%s/segment-%04d.wav", filename, i);
 		nsamp += appendFile(masterFd, temp);
 		nsamp += addRoomNoise(masterFd, 1, roomNoiseSamples);
@@ -706,6 +749,9 @@ void combineSession() {
 void reopenSession() {
     int fd;
     segmentNo = 1;
+
+    loadRoomNoise();
+
     char temp[1024];
     sprintf(temp, "%s/segment-%04d.wav", filename, segmentNo);
     while (access(temp, F_OK) != -1) {
@@ -784,7 +830,7 @@ int main (int argc, char *argv[]) {
 						break;
 					case SDLK_n:
 						if (!recording)
-							startNewSession();
+							recordRoomNoise();
 						break;
 					case SDLK_r:
 						if (!recording) 
