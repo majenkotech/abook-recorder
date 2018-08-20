@@ -1,4 +1,7 @@
 CXXFLAGS=-Wno-deprecated-declarations
+
+all: abook-recorder
+
 abook-recorder.o: LiberationSans-Regular.h
 abook-recorder: abook-recorder.o 
 	cc -o $@ $< -I . -lm -lasound -lSDL2 -lSDL2_ttf -lSDL2_image
