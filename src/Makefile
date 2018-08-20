@@ -21,3 +21,6 @@ clean:
 
 LiberationSans-Regular.h: LiberationSans-Regular.ttf
 	bin2h 16 < $< > $@
+
+install: abook-recorder
+	install -m 755 abook-recorder ${DESTDIR}/usr/bin

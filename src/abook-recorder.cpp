@@ -35,25 +35,43 @@ void text(const char *message, int x, int y);
 struct ButtonMap {
     int gpio;
     int key;
-    char label;
+    const char *label;
     int x;
     int y;
     int state;
 };
 
 struct ButtonMap buttons[] = {
-    { 23, SDLK_r, 'R', 0, 0, 0},  // Circle: record
-    { 22, SDLK_d, 'D', 0, 80, 0},  // Square: delete
-    { 24, SDLK_c, 'C', 0, 160, 0},  // Triangle: combine
-    { 5,  SDLK_q, 'Q', 0, 220, 0},  // Cross: quit
-    { 4,  SDLK_n, 'N', 300, 40, 0},  // End 1: noise
-    { 17, SDLK_p, 'P', 300, 180, 0},  // End 2: p?
+    { 23, SDLK_r, "R", 0, 0, 0},  // Circle: record
+    { 22, SDLK_d, "D", 0, 80, 0},  // Square: delete
+    { 24, SDLK_c, "C", 0, 160, 0},  // Triangle: combine
+    { 5,  SDLK_q, "Q", 0, 220, 0},  // Cross: quit
+    { 17, SDLK_n, "N", 300, 40, 0},  // End 1: noise
+    { 4,  SDLK_b, "Bl", 290, 180, 0},  // End 2: nothing
     { 0, 0, 0, 0, 0, 0} // End of list
 };
 
 #include <pigpio.h>
 
+int backlight = 1;
+
+void initBacklight() {
+        gpioSetMode(27, PI_OUTPUT);
+}
+
+void toggleBacklight() {
+    backlight = 1 - backlight;
+    gpioWrite(27, backlight);
+}
+
 void initButtons() {
+
+    int uid = getuid();
+    if (uid != 0) {
+        printf("Error: this must be run as root to access GPIO.\n");
+        exit(10);
+    }
+
     gpioInitialise();
     for (int i = 0; buttons[i].label != 0; i++) {
         gpioSetMode(buttons[i].gpio, PI_INPUT);
@@ -85,13 +103,17 @@ void mapButtons() {
 }
 
 void drawButtons() {
-    char temp[2];
     for (int i = 0; buttons[i].label != 0; i++) {
-        sprintf(temp, "%c", buttons[i].label);
-        text(temp, buttons[i].x, buttons[i].y);
+        text(buttons[i].label, buttons[i].x, buttons[i].y);
     }
 }
 #else
+void initBacklight() {
+}
+
+void toggleBacklight() {
+}
+
 void initButtons() {
 }
 
@@ -417,14 +439,15 @@ void initSDL() {
 
     SDL_SetHintWithPriority(SDL_HINT_NO_SIGNAL_HANDLERS, "1", SDL_HINT_OVERRIDE);
 
-    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Init(SDL_INIT_EVERYTHING);
     IMG_Init(IMG_INIT_PNG);
     TTF_Init();
 
+
     if (fullScreen) {
 	    _window = SDL_CreateWindow("Audiobook Recorder",
-		SDL_WINDOWPOS_UNDEFINED,
-		SDL_WINDOWPOS_UNDEFINED,
+		SDL_WINDOWPOS_CENTERED,
+		SDL_WINDOWPOS_CENTERED,
 		320,
 		240,
 		SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN
@@ -578,6 +601,17 @@ void updateScreen() {
     SDL_UpdateWindowSurface(_window);
 }
 
+void flushRecordingDevice() {
+    int numSamples = snd_pcm_avail( alsa_handle );
+	if (numSamples == 0) return;
+	if (numSamples > MAX_SAMPLES) numSamples = MAX_SAMPLES;
+    do {
+        snd_pcm_readi( alsa_handle, (char *)&recordingBuffer[0], numSamples);
+        numSamples = snd_pcm_avail( alsa_handle );
+        if (numSamples > MAX_SAMPLES) numSamples = MAX_SAMPLES;
+    } while (numSamples > 0);
+}
+
 void recordRoomNoise() {
 	noiseFloor = 0;
 	samples = 0;
@@ -588,6 +622,9 @@ void recordRoomNoise() {
 
 	text("Recording Room Noise. Be Silent!", 20, 20);
 	
+    SDL_Delay(100); // Little delay to avoid recording the click.
+
+    flushRecordingDevice();
 	updateScreen();
 	recording = 1;
 	recordingRoomNoise = 1;
@@ -601,6 +638,10 @@ void startRecording() {
         updateScreen();
         return;
     }
+
+    SDL_Delay(100); // Little delay to avoid recording the click.
+
+    flushRecordingDevice();
 	samples = 0;
 
 	segmentNo++;
@@ -932,10 +973,6 @@ int main (int argc, char *argv[]) {
 								combineSession();
 							}
 							break;
-						case SDLK_n:
-							if (!recording)
-								recordRoomNoise();
-							break;
 						case SDLK_r:
 							if (!recording) 
 								startRecording();
@@ -947,12 +984,19 @@ int main (int argc, char *argv[]) {
 							if (!recording)
 								undoRecording();
 							break;
+                        case SDLK_b:
+                            toggleBacklight();
+                            break;
 					}
 				}
 				break;
 			case SDL_KEYUP:
 				if (event.key.repeat == 0) {
 					switch (event.key.keysym.sym) {
+						case SDLK_n:
+							if (!recording)
+								recordRoomNoise();
+							break;
 						case SDLK_r:
 							if (recording)
 								stopRecording();
