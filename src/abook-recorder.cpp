@@ -25,7 +25,82 @@
 
 int16_t recordingBuffer[MAX_SAMPLES * 2];
 
+int fullScreen = 0;
+
 #include "alsa/asoundlib.h"
+
+#ifdef __ARMEL__
+void text(const char *message, int x, int y);
+
+struct ButtonMap {
+    int gpio;
+    int key;
+    char label;
+    int x;
+    int y;
+    int state;
+};
+
+struct ButtonMap buttons[] = {
+    { 23, SDLK_r, 'R', 0, 0, 0},  // Circle: record
+    { 22, SDLK_d, 'D', 0, 80, 0},  // Square: delete
+    { 24, SDLK_c, 'C', 0, 160, 0},  // Triangle: combine
+    { 5,  SDLK_q, 'Q', 0, 220, 0},  // Cross: quit
+    { 4,  SDLK_n, 'N', 300, 40, 0},  // End 1: noise
+    { 17, SDLK_p, 'P', 300, 180, 0},  // End 2: p?
+    { 0, 0, 0, 0, 0, 0} // End of list
+};
+
+#include <pigpio.h>
+
+void initButtons() {
+    gpioInitialise();
+    for (int i = 0; buttons[i].label != 0; i++) {
+        gpioSetMode(buttons[i].gpio, PI_INPUT);
+        gpioSetPullUpDown(buttons[i].gpio, PI_PUD_UP);
+        buttons[i].state = gpioRead(buttons[i].gpio);
+    }
+}
+
+void mapButtons() {
+    for (int i = 0; buttons[i].label != 0; i++) {
+        int r = gpioRead(buttons[i].gpio);
+        if (buttons[i].state != r) {
+            buttons[i].state = r;
+            if (r == 0) {
+                SDL_Event e;
+                e.type = SDL_KEYDOWN;
+                e.key.keysym.sym = buttons[i].key;
+                e.key.repeat = 0;
+                SDL_PushEvent(&e);
+            } else {
+                SDL_Event e;
+                e.type = SDL_KEYUP;
+                e.key.keysym.sym = buttons[i].key;
+                e.key.repeat = 0;
+                SDL_PushEvent(&e);
+            }
+        }
+    }
+}
+
+void drawButtons() {
+    char temp[2];
+    for (int i = 0; buttons[i].label != 0; i++) {
+        sprintf(temp, "%c", buttons[i].label);
+        text(temp, buttons[i].x, buttons[i].y);
+    }
+}
+#else
+void initButtons() {
+}
+
+void mapButtons() {
+}
+
+void drawButtons() {
+}
+#endif
 
 //#include <samplerate.h>
 
@@ -346,24 +421,23 @@ void initSDL() {
     IMG_Init(IMG_INIT_PNG);
     TTF_Init();
 
-#ifdef __ARMEL__
-    _window = SDL_CreateWindow("Audiobook Recorder",
-        SDL_WINDOWPOS_UNDEFINED,
-        SDL_WINDOWPOS_UNDEFINED,
-        320,
-        240,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN
-    );
-#else
-    _window = SDL_CreateWindow("Audiobook Recorder",
-        SDL_WINDOWPOS_UNDEFINED,
-        SDL_WINDOWPOS_UNDEFINED,
-        320,
-        240,
-        SDL_WINDOW_SHOWN
-    );
-#endif
-
+    if (fullScreen) {
+	    _window = SDL_CreateWindow("Audiobook Recorder",
+		SDL_WINDOWPOS_UNDEFINED,
+		SDL_WINDOWPOS_UNDEFINED,
+		320,
+		240,
+		SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN
+	    );
+    } else {
+        _window = SDL_CreateWindow("Audiobook Recorder",
+            SDL_WINDOWPOS_UNDEFINED,
+            SDL_WINDOWPOS_UNDEFINED,
+            320,
+            240,
+            SDL_WINDOW_SHOWN
+        );
+    }
     if (!_window) {
         printf("Unable to create screen: %s\n", SDL_GetError());
         SDL_Quit();
@@ -499,6 +573,7 @@ void displaySummary() {
 
 void updateScreen() {
     displaySummary();
+    drawButtons();
     SDL_BlitSurface(_display, NULL, _backing, NULL);
     SDL_UpdateWindowSurface(_window);
 }
@@ -790,7 +865,7 @@ int main (int argc, char *argv[]) {
     int errflg=0;
     int c;
 
-    while ((c = getopt(argc, argv, "d:n:")) != -1) {
+    while ((c = getopt(argc, argv, "fd:n:")) != -1) {
         switch(c) {
             case 'd':
                 strcpy(alsa_device,optarg);
@@ -798,6 +873,9 @@ int main (int argc, char *argv[]) {
             case 'n':
                 strcpy(filename, optarg);
                 break;
+            case 'f':
+		fullScreen++;
+		break;
         }
     }
 
@@ -824,17 +902,21 @@ int main (int argc, char *argv[]) {
     signal( SIGTERM, sigterm_handler );
     signal( SIGINT, sigterm_handler );
 
+    initButtons();
+
 	initSDL();
-	updateScreen();
-	clearScreen();
+    SDL_Delay(100);
 	updateScreen();
 	SDL_Delay(100);
-
-    displaySummary();
+	updateScreen();
+	SDL_Delay(100);
+	updateScreen();
+	SDL_Delay(100);
 
 
     while (quit == 0) {
 
+    mapButtons();
 
 	SDL_Event event;
 	while (SDL_PollEvent(&event)) {
@@ -869,11 +951,13 @@ int main (int argc, char *argv[]) {
 				}
 				break;
 			case SDL_KEYUP:
-				switch (event.key.keysym.sym) {
-					case SDLK_r:
-						if (recording)
-							stopRecording();
-						break;
+				if (event.key.repeat == 0) {
+					switch (event.key.keysym.sym) {
+						case SDLK_r:
+							if (recording)
+								stopRecording();
+							break;
+					}
 				}
 				break;
 		}
