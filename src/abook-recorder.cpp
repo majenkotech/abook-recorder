@@ -26,6 +26,7 @@
 int16_t recordingBuffer[MAX_SAMPLES * 2];
 
 int fullScreen = 0;
+int buttonsEnabled = 0;
 
 #include "alsa/asoundlib.h"
 
@@ -596,7 +597,9 @@ void displaySummary() {
 
 void updateScreen() {
     displaySummary();
-    drawButtons();
+    if (buttonsEnabled) {
+        drawButtons();
+    }
     SDL_BlitSurface(_display, NULL, _backing, NULL);
     SDL_UpdateWindowSurface(_window);
 }
@@ -906,7 +909,7 @@ int main (int argc, char *argv[]) {
     int errflg=0;
     int c;
 
-    while ((c = getopt(argc, argv, "fd:n:")) != -1) {
+    while ((c = getopt(argc, argv, "bfd:n:")) != -1) {
         switch(c) {
             case 'd':
                 strcpy(alsa_device,optarg);
@@ -915,8 +918,11 @@ int main (int argc, char *argv[]) {
                 strcpy(filename, optarg);
                 break;
             case 'f':
-		fullScreen++;
-		break;
+                fullScreen++;
+                break;
+            case 'b':
+                buttonsEnabled++;
+                break;
         }
     }
 
@@ -943,7 +949,9 @@ int main (int argc, char *argv[]) {
     signal( SIGTERM, sigterm_handler );
     signal( SIGINT, sigterm_handler );
 
-    initButtons();
+    if (buttonsEnabled) {
+        initButtons();
+    }
 
 	initSDL();
     SDL_Delay(100);
@@ -957,7 +965,9 @@ int main (int argc, char *argv[]) {
 
     while (quit == 0) {
 
-    mapButtons();
+    if (buttonsEnabled) {
+        mapButtons();
+    }
 
 	SDL_Event event;
 	while (SDL_PollEvent(&event)) {
