@@ -27,6 +27,7 @@ int16_t recordingBuffer[MAX_SAMPLES * 2];
 
 int fullScreen = 0;
 int buttonsEnabled = 0;
+int displayUsage = 0;
 
 #include "alsa/asoundlib.h"
 
@@ -901,6 +902,15 @@ void reopenSession() {
     segmentNo--;
 }
 
+void displayHelpMessage() {
+    printf("Usage: abook-recorder [options]\n");
+    printf("  Options:\n");
+    printf("      -d <device>       - Set ALSA device\n");
+    printf("      -n <name>         - Name the session\n");
+    printf("      -f                - Full screen\n");
+    printf("      -b                - Enable GPIO buttons (Pi only)\n");
+}
+
 int main (int argc, char *argv[]) {
     char alsa_device[30] = "hw:0";
 
@@ -909,7 +919,7 @@ int main (int argc, char *argv[]) {
     int errflg=0;
     int c;
 
-    while ((c = getopt(argc, argv, "bfd:n:")) != -1) {
+    while ((c = getopt(argc, argv, "hbfd:n:")) != -1) {
         switch(c) {
             case 'd':
                 strcpy(alsa_device,optarg);
@@ -923,7 +933,19 @@ int main (int argc, char *argv[]) {
             case 'b':
                 buttonsEnabled++;
                 break;
+            case 'h':
+                displayUsage++;
+                break;
+
+            default:
+                displayUsage++;
+                break;
         }
+    }
+
+    if (displayUsage) {
+        displayHelpMessage();
+        exit(0);
     }
 
     if (filename[0] != 0) {
