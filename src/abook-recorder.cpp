@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <alsa/asoundlib.h>
 #include <pwd.h>
+#include <dirent.h>
 
 // Maximum 60 seconds of recording per segment
 #define MAX_SAMPLES (48000 * 60)
@@ -209,6 +210,15 @@ SDL_Color white = {255, 255, 255};
 int noiseFloor = 0;
 
 
+bool dirExists(const char *path) {
+    DIR *dir = opendir(path);
+    if (!dir) {
+        return false;
+    }
+    closedir(dir);
+    return true;
+}
+
 
 void initSDL() {
     atexit(SDL_Quit);
@@ -355,17 +365,18 @@ void displaySummary() {
 
 
     sprintf(temp, "Session: %s", filename);
-    text(temp, 20, 60);
+    text(temp, 20, 50);
     sprintf(temp, "Segments: %d", segmentNo);
-    text(temp, 20, 80);
+    text(temp, 20, 70);
     sprintf(temp, "Noise floor: %d", noiseFloor);
-    text(temp, 20, 100);
+    text(temp, 20, 90);
 
-    text("Press N to record room noise", 20, 120);
-    text("Press C to combine session to WAV", 20, 140);
-    text("Press R to record a new segment", 20, 160);
-    text("Press D to delete last segment", 20, 180);
-    text("Press Q to quit", 20, 200);
+    text("Press N to record room noise", 20, 110);
+    text("Press C to combine session to WAV", 20, 130);
+    text("Press R to record a new segment", 20, 150);
+    text("Press D to delete last segment", 20, 170);
+    text("Press P to add a marker pulse", 20, 190);
+    text("Press Q to quit", 20, 210);
 
 //    updateScreen();
 }
@@ -394,7 +405,10 @@ void recordRoomNoise() {
 	noiseFloor = 0;
 	samples = 0;
 
-	mkdir(filename, 0777);
+    char temp[1024];
+    sprintf(temp, "%s/%s", recdir, filename);
+
+	mkdir(temp, 0777);
 
 	SDL_FillRect(_display, NULL, 0xFFFF0000);
 
@@ -446,7 +460,7 @@ int loadFileToBuffer(const char *fn) {
 
 void loadRoomNoise() {
     char temp[1024];
-    sprintf(temp, "%s/room-noise.wav", filename);
+    sprintf(temp, "%s/%s/room-noise.wav", recdir, filename);
     samples = loadFileToBuffer(temp);
     noiseFloor = 0;
     for (int i = 0; i < samples; i++) {
@@ -484,10 +498,10 @@ void stopRecording() {
         noiseFloor *= 10;
         noiseFloor /= 9;
 
-		sprintf(temp, "%s/room-noise.wav", filename);
+		sprintf(temp, "%s/%s/room-noise.wav", recdir, filename);
 
 	} else {
-		sprintf(temp, "%s/segment-%04d.wav", filename, segmentNo);
+		sprintf(temp, "%s/%s/segment-%04d.wav", recdir, filename, segmentNo);
 #if 1
 		while (
 			(abs(recordingBuffer[firstSample * 2]) <= noiseFloor) &&
@@ -574,7 +588,7 @@ void doRecording() {
 
 void undoRecording() {
 	char temp[1024];
-	sprintf(temp, "%s/segment-%4d.wav", filename, segmentNo);
+	sprintf(temp, "%s/%s/segment-%4d.wav", recdir, filename, segmentNo);
 	unlink(temp);
 	if (segmentNo > 0) {
 		segmentNo--;
@@ -612,13 +626,13 @@ void combineSession() {
 
 	int16_t roomNoiseSamples[48000 * 5 * 2];
 
-	sprintf(temp, "%s/room-noise.wav", filename);
+	sprintf(temp, "%s/%s/room-noise.wav", recdir, filename);
 	int fd = open(temp, O_RDONLY);
 	lseek(fd, 44, SEEK_SET);
 	read(fd, roomNoiseSamples, 48000 * 5 * 2 * 2);
 	close(fd);
 
-	sprintf(temp, "%s.wav", filename);
+	sprintf(temp, "%s/%s.wav", recdir, filename);
 	int masterFd = open(temp, O_RDWR | O_CREAT, 0666);
 
 	struct wav header;
@@ -645,7 +659,7 @@ void combineSession() {
 	nsamp += addRoomNoise(masterFd, 2, roomNoiseSamples);
 
 	for (int i = 1; i <= segmentNo; i++) {
-		sprintf(temp, "%s/segment-%04d.wav", filename, i);
+		sprintf(temp, "%s/%s/segment-%04d.wav", recdir, filename, i);
 		nsamp += appendFile(masterFd, temp);
 		nsamp += addRoomNoise(masterFd, 1, roomNoiseSamples);
 	}
@@ -668,10 +682,10 @@ void reopenSession() {
     loadRoomNoise();
 
     char temp[1024];
-    sprintf(temp, "%s/segment-%04d.wav", filename, segmentNo);
+    sprintf(temp, "%s/%s/segment-%04d.wav", recdir, filename, segmentNo);
     while (access(temp, F_OK) != -1) {
         segmentNo++;
-        sprintf(temp, "%s/segment-%04d.wav", filename, segmentNo);
+        sprintf(temp, "%s/%s/segment-%04d.wav", recdir, filename, segmentNo);
     }
     segmentNo--;
 }
@@ -689,13 +703,26 @@ void getRecDir() {
     struct passwd *pw = getpwuid(getuid());
     snprintf(recdir, 1024, "%s/Recordings", pw->pw_dir);
 
-    if (!access(recdir, R_OK | W_OK | X_OK) == -1) {
+    if (!dirExists(recdir)) {
         mkdir(recdir, 0755);
     }
-    if (!access(recdir, R_OK | W_OK | X_OK) == -1) {
+    if (!dirExists(recdir)) {
         printf("Unable to create or access %s!\n", recdir);
         exit(10);
     }
+}
+
+void addPulseFile() {
+    segmentNo++;
+    int i = 0;
+    for (samples = 0; samples < 4800; samples++) {
+        recordingBuffer[i++] = 32767;
+        recordingBuffer[i++] = 32767;
+        recordingBuffer[i++] = -32768;
+        recordingBuffer[i++] = -32768;
+    }
+    recording = 1;
+    stopRecording();
 }
 
 int main (int argc, char *argv[]) {
@@ -744,7 +771,7 @@ int main (int argc, char *argv[]) {
 
     if (filename[0] != 0) {
         char temp[1024];
-        sprintf(temp, "%s/room-noise.wav", filename);
+        sprintf(temp, "%s/%s/room-noise.wav", recdir, filename);
         int fd;
         if (access(temp, F_OK) != -1) {
             reopenSession();
@@ -812,6 +839,9 @@ int main (int argc, char *argv[]) {
 							break;
                         case SDLK_b:
                             toggleBacklight();
+                            break;
+                        case SDLK_p:
+                            addPulseFile();
                             break;
 					}
 				}
