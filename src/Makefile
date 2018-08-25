@@ -13,8 +13,8 @@ endif
 
 
 abook-recorder.o: LiberationSans-Regular.h
-abook-recorder: abook-recorder.o 
-	cc -o $@ $< -I . $(LIBS)
+abook-recorder: abook-recorder.o alsa.o
+	cc -o $@ $^ -I . $(LIBS)
 
 clean:
 	rm abook-recorder *.o

@@ -19,17 +19,21 @@
 #include <SDL2/SDL_ttf.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <alsa/asoundlib.h>
+#include <pwd.h>
 
 // Maximum 60 seconds of recording per segment
 #define MAX_SAMPLES (48000 * 60)
+
+extern snd_pcm_t *open_audiofd( char *device_name, int capture, int rate, int channels, int period, int nperiods );
+
 
 int16_t recordingBuffer[MAX_SAMPLES * 2];
 
 int fullScreen = 0;
 int buttonsEnabled = 0;
 int displayUsage = 0;
-
-#include "alsa/asoundlib.h"
+char recdir[1024] = {0};
 
 #ifdef __ARMEL__
 void text(const char *message, int x, int y);
@@ -126,8 +130,6 @@ void drawButtons() {
 }
 #endif
 
-//#include <samplerate.h>
-
 const uint8_t mainfont[] = {
 #include "LiberationSans-Regular.h"
 };
@@ -177,234 +179,6 @@ int sample_rate = 48000;				 /* stream rate */
 int num_channels = 2;				 /* count of channels */
 int period_size = 1024;
 int num_periods = 2;
-
-int target_delay = 0;	    /* the delay which the program should try to approach. */
-int max_diff = 0;	    /* the diff value, when a hard readpointer skip should occur */
-int catch_factor = 100000;
-int catch_factor2 = 10000;
-double pclamp = 15.0;
-double controlquant = 10000.0;
-int smooth_size = 256;
-int good_window=0;
-int verbose = 0;
-int instrument = 0;
-int samplerate_quality = 2;
-
-// Debug stuff:
-
-volatile float output_resampling_factor = 1.0;
-volatile int output_new_delay = 0;
-volatile float output_offset = 0.0;
-volatile float output_integral = 0.0;
-volatile float output_diff = 0.0;
-volatile int running_freewheel = 0;
-
-snd_pcm_uframes_t real_buffer_size;
-snd_pcm_uframes_t real_period_size;
-
-// buffers
-
-// format selection, and corresponding functions from memops in a nice set of structs.
-
-// Alsa stuff... i dont want to touch this bullshit in the next years.... please...
-
-static int xrun_recovery(snd_pcm_t *handle, int err) {
-//    printf( "xrun !!!.... %d\n", err );
-	if (err == -EPIPE) {	/* under-run */
-		err = snd_pcm_prepare(handle);
-		if (err < 0)
-			printf("Can't recover from underrun, prepare failed: %s\n", snd_strerror(err));
-		return 0;
-	} else if (err == -ESTRPIPE) {
-		while ((err = snd_pcm_resume(handle)) == -EAGAIN)
-			usleep(100);	/* wait until the suspend flag is released */
-		if (err < 0) {
-			err = snd_pcm_prepare(handle);
-			if (err < 0)
-				printf("Can't recover from suspend, prepare failed: %s\n", snd_strerror(err));
-		}
-		return 0;
-	}
-	return err;
-}
-
-static int set_hwformat( snd_pcm_t *handle, snd_pcm_hw_params_t *params )
-{
-	return snd_pcm_hw_params_set_format(handle, params, SND_PCM_FORMAT_S16);
-}
-
-static int set_hwparams(snd_pcm_t *handle, snd_pcm_hw_params_t *params, snd_pcm_access_t access, int rate, int channels, int period, int nperiods ) {
-	int err, dir=0;
-	unsigned int buffer_time;
-	unsigned int period_time;
-	unsigned int rrate;
-	unsigned int rchannels;
-
-	/* choose all parameters */
-	err = snd_pcm_hw_params_any(handle, params);
-	if (err < 0) {
-		printf("Broken configuration for playback: no configurations available: %s\n", snd_strerror(err));
-		return err;
-	}
-	/* set the interleaved read/write format */
-	err = snd_pcm_hw_params_set_access(handle, params, access);
-	if (err < 0) {
-		printf("Access type not available for playback: %s\n", snd_strerror(err));
-		return err;
-	}
-
-	/* set the sample format */
-	err = set_hwformat(handle, params);
-	if (err < 0) {
-		printf("Sample format not available for playback: %s\n", snd_strerror(err));
-		return err;
-	}
-	/* set the count of channels */
-	rchannels = channels;
-	err = snd_pcm_hw_params_set_channels_near(handle, params, &rchannels);
-	if (err < 0) {
-		printf("Channels count (%i) not available for record: %s\n", channels, snd_strerror(err));
-		return err;
-	}
-	if (rchannels != channels) {
-		printf("WARNING: chennel count does not match (requested %d got %d)\n", channels, rchannels);
-		num_channels = rchannels;
-	}
-	/* set the stream rate */
-	rrate = rate;
-	err = snd_pcm_hw_params_set_rate_near(handle, params, &rrate, 0);
-	if (err < 0) {
-		printf("Rate %iHz not available for playback: %s\n", rate, snd_strerror(err));
-		return err;
-	}
-	if (rrate != rate) {
-		printf("WARNING: Rate doesn't match (requested %iHz, get %iHz)\n", rate, rrate);
-		sample_rate = rrate;
-	}
-	/* set the buffer time */
-
-	buffer_time = 1000000*(uint64_t)period*nperiods/rate;
-	err = snd_pcm_hw_params_set_buffer_time_near(handle, params, &buffer_time, &dir);
-	if (err < 0) {
-		printf("Unable to set buffer time %i for playback: %s\n",  1000000*period*nperiods/rate, snd_strerror(err));
-		return err;
-	}
-	err = snd_pcm_hw_params_get_buffer_size( params, &real_buffer_size );
-	if (err < 0) {
-		printf("Unable to get buffer size back: %s\n", snd_strerror(err));
-		return err;
-	}
-	if( real_buffer_size != nperiods * period ) {
-	    printf( "WARNING: buffer size does not match: (requested %d, got %d)\n", nperiods * period, (int) real_buffer_size );
-	}
-	/* set the period time */
-	period_time = 1000000*(uint64_t)period/rate;
-	err = snd_pcm_hw_params_set_period_time_near(handle, params, &period_time, &dir);
-	if (err < 0) {
-		printf("Unable to set period time %i for playback: %s\n", 1000000*period/rate, snd_strerror(err));
-		return err;
-	}
-	err = snd_pcm_hw_params_get_period_size(params, &real_period_size, NULL );
-	if (err < 0) {
-		printf("Unable to get period size back: %s\n", snd_strerror(err));
-		return err;
-	}
-	if( real_period_size != period ) {
-	    printf( "WARNING: period size does not match: (requested %i, got %i)\n", period, (int)real_period_size );
-	}
-	/* write the parameters to device */
-	err = snd_pcm_hw_params(handle, params);
-	if (err < 0) {
-		printf("Unable to set hw params for playback: %s\n", snd_strerror(err));
-		return err;
-	}
-	return 0;
-}
-
-static int set_swparams(snd_pcm_t *handle, snd_pcm_sw_params_t *swparams, int period) {
-	int err;
-
-	/* get the current swparams */
-	err = snd_pcm_sw_params_current(handle, swparams);
-	if (err < 0) {
-		printf("Unable to determine current swparams for capture: %s\n", snd_strerror(err));
-		return err;
-	}
-	/* start the transfer when the buffer is full */
-	err = snd_pcm_sw_params_set_start_threshold(handle, swparams, period );
-	if (err < 0) {
-		printf("Unable to set start threshold mode for capture: %s\n", snd_strerror(err));
-		return err;
-	}
-	err = snd_pcm_sw_params_set_stop_threshold(handle, swparams, -1 );
-	if (err < 0) {
-		printf("Unable to set start threshold mode for capture: %s\n", snd_strerror(err));
-		return err;
-	}
-	/* allow the transfer when at least period_size samples can be processed */
-	err = snd_pcm_sw_params_set_avail_min(handle, swparams, 2*period );
-	if (err < 0) {
-		printf("Unable to set avail min for capture: %s\n", snd_strerror(err));
-		return err;
-	}
-	/* align all transfers to 1 sample */
-	err = snd_pcm_sw_params_set_xfer_align(handle, swparams, 1);
-	if (err < 0) {
-		printf("Unable to set transfer align for capture: %s\n", snd_strerror(err));
-		return err;
-	}
-	/* write the parameters to the playback device */
-	err = snd_pcm_sw_params(handle, swparams);
-	if (err < 0) {
-		printf("Unable to set sw params for capture: %s\n", snd_strerror(err));
-		return err;
-	}
-	return 0;
-}
-
-// ok... i only need this function to communicate with the alsa bloat api...
-
-static snd_pcm_t *open_audiofd( char *device_name, int capture, int rate, int channels, int period, int nperiods ) {
-  int err;
-  snd_pcm_t *handle;
-  snd_pcm_hw_params_t *hwparams;
-  snd_pcm_sw_params_t *swparams;
-
-  snd_pcm_hw_params_alloca(&hwparams);
-  snd_pcm_sw_params_alloca(&swparams);
-
-  if ((err = snd_pcm_open(&(handle), device_name, capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK )) < 0) {
-      printf("Capture open error: %s\n", snd_strerror(err));
-      return NULL;
-  }
-
-  if ((err = set_hwparams(handle, hwparams,SND_PCM_ACCESS_RW_INTERLEAVED, rate, channels, period, nperiods )) < 0) {
-      printf("Setting of hwparams failed: %s\n", snd_strerror(err));
-      return NULL;
-  }
-  if ((err = set_swparams(handle, swparams, period)) < 0) {
-      printf("Setting of swparams failed: %s\n", snd_strerror(err));
-      return NULL;
-  }
-
-  snd_pcm_start( handle );
-  snd_pcm_wait( handle, 200 );
-
-  return handle;
-}
-
-double hann( double x )
-{
-	return 0.5 * (1.0 - cos( 2*M_PI * x ) );
-}
-
-void printUsage() {
-fprintf(stderr, "usage: alsa_out [options]\n"
-		"\n"
-		"  -d <alsa_device> \n"
-		"\n");
-}
-
 
 /**
  * the main function....
@@ -911,6 +685,19 @@ void displayHelpMessage() {
     printf("      -b                - Enable GPIO buttons (Pi only)\n");
 }
 
+void getRecDir() {
+    struct passwd *pw = getpwuid(getuid());
+    snprintf(recdir, 1024, "%s/Recordings", pw->pw_dir);
+
+    if (!access(recdir, R_OK | W_OK | X_OK) == -1) {
+        mkdir(recdir, 0755);
+    }
+    if (!access(recdir, R_OK | W_OK | X_OK) == -1) {
+        printf("Unable to create or access %s!\n", recdir);
+        exit(10);
+    }
+}
+
 int main (int argc, char *argv[]) {
     char alsa_device[30] = "hw:0";
 
@@ -919,7 +706,7 @@ int main (int argc, char *argv[]) {
     int errflg=0;
     int c;
 
-    while ((c = getopt(argc, argv, "hbfd:n:")) != -1) {
+    while ((c = getopt(argc, argv, "hbfd:n:r:")) != -1) {
         switch(c) {
             case 'd':
                 strcpy(alsa_device,optarg);
@@ -936,6 +723,9 @@ int main (int argc, char *argv[]) {
             case 'h':
                 displayUsage++;
                 break;
+            case 'r':
+                strcpy(recdir, optarg);
+                break;
 
             default:
                 displayUsage++;
@@ -946,6 +736,10 @@ int main (int argc, char *argv[]) {
     if (displayUsage) {
         displayHelpMessage();
         exit(0);
+    }
+
+    if (recdir[0] == 0) {
+        getRecDir();
     }
 
     if (filename[0] != 0) {
