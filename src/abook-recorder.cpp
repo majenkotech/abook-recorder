@@ -24,12 +24,12 @@
 #include <dirent.h>
 
 // Maximum 60 seconds of recording per segment
-#define MAX_SAMPLES (48000 * 60)
+#define MAX_SAMPLES (sample_rate * 60)
 
 extern snd_pcm_t *open_audiofd( char *device_name, int capture, int rate, int channels, int period, int nperiods );
 
 
-int16_t recordingBuffer[MAX_SAMPLES * 2];
+int16_t *recordingBuffer; //[MAX_SAMPLES * 2];
 
 int fullScreen = 0;
 int buttonsEnabled = 0;
@@ -516,10 +516,10 @@ void stopRecording() {
 				lastSample --;
 		}
 
-        firstSample -= 4800;
+        firstSample -= sample_rate / 10;
         if (firstSample < 0) firstSample = 0;
 
-        lastSample += 4800;
+        lastSample += sample_rate / 10;
         if (lastSample > samples - 1) lastSample = samples - 1;
 #endif
 	}
@@ -537,8 +537,8 @@ void stopRecording() {
 	header.fmt_chunksize = 16;
 	header.fmt_audioformat = 1;
 	header.fmt_numchannels =  2;
-	header.fmt_samplerate = 48000;
-	header.fmt_byterate = 48000 * 2 * 2;
+	header.fmt_samplerate = sample_rate;
+	header.fmt_byterate = sample_rate * 2 * 2;
 	header.fmt_blockalign = 2 * 2;
 	header.fmt_bitspersample = 16;
 
@@ -561,7 +561,7 @@ void stopRecording() {
 void doRecording() {
 
 	if (recordingRoomNoise) {
-		if (samples >= 48000 * 5) {
+		if (samples >= sample_rate * 5) {
 			stopRecording();
 		}
 	}
@@ -598,13 +598,13 @@ void undoRecording() {
 }
 
 int addRoomNoise(int fd, int seconds, int16_t *roomNoiseSamples) {
-    int len = 48000 * seconds;
-    int maxsamp = 48000 * 5 - len;
+    int len = sample_rate * seconds;
+    int maxsamp = sample_rate * 5 - len;
 
     int pos = rand() % maxsamp;
     
-	write(fd, &roomNoiseSamples[pos * 2], 48000 * 4 * seconds);
-	return 48000 * seconds;
+	write(fd, &roomNoiseSamples[pos * 2], sample_rate * 4 * seconds);
+	return sample_rate * seconds;
 }
 
 int appendFile(int fd, const char *fn) {
@@ -624,12 +624,12 @@ void combineSession() {
 
 	char temp[1024];
 
-	int16_t roomNoiseSamples[48000 * 5 * 2];
+	int16_t roomNoiseSamples[sample_rate * 5 * 2];
 
 	sprintf(temp, "%s/%s/room-noise.wav", recdir, filename);
 	int fd = open(temp, O_RDONLY);
 	lseek(fd, 44, SEEK_SET);
-	read(fd, roomNoiseSamples, 48000 * 5 * 2 * 2);
+	read(fd, roomNoiseSamples, sample_rate * 5 * 2 * 2);
 	close(fd);
 
 	sprintf(temp, "%s/%s.wav", recdir, filename);
@@ -645,8 +645,8 @@ void combineSession() {
 	header.fmt_chunksize = 16;
 	header.fmt_audioformat = 1;
 	header.fmt_numchannels =  2;
-	header.fmt_samplerate = 48000;
-	header.fmt_byterate = 48000 * 2 * 2;
+	header.fmt_samplerate = sample_rate;
+	header.fmt_byterate = sample_rate * 2 * 2;
 	header.fmt_blockalign = 2 * 2;
 	header.fmt_bitspersample = 16;
 
@@ -715,7 +715,7 @@ void getRecDir() {
 void addPulseFile() {
     segmentNo++;
     int i = 0;
-    for (samples = 0; samples < 4800; samples++) {
+    for (samples = 0; samples < (sample_rate / 10); samples++) {
         recordingBuffer[i++] = 32767;
         recordingBuffer[i++] = 32767;
         recordingBuffer[i++] = -32768;
@@ -733,7 +733,7 @@ int main (int argc, char *argv[]) {
     int errflg=0;
     int c;
 
-    while ((c = getopt(argc, argv, "hbfd:n:r:")) != -1) {
+    while ((c = getopt(argc, argv, "hbfd:n:r:R:")) != -1) {
         switch(c) {
             case 'd':
                 strcpy(alsa_device,optarg);
@@ -754,10 +754,21 @@ int main (int argc, char *argv[]) {
                 strcpy(recdir, optarg);
                 break;
 
+            case 'R':
+                sample_rate = atoi(optarg);
+                break;
+
             default:
                 displayUsage++;
                 break;
         }
+    }
+
+    recordingBuffer = (int16_t *)malloc(MAX_SAMPLES * 4);
+
+    if (!recordingBuffer) {
+        printf("Unable to allocate recording buffer!\n");
+        exit(10);
     }
 
     if (displayUsage) {
