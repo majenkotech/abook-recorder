@@ -22,12 +22,13 @@
 #include <alsa/asoundlib.h>
 #include <pwd.h>
 #include <dirent.h>
+#include <sys/wait.h>
+#include <pocketsphinx.h>
 
 // Maximum 60 seconds of recording per segment
 #define MAX_SAMPLES (sample_rate * 60)
 
 extern snd_pcm_t *open_audiofd( char *device_name, int capture, int rate, int channels, int period, int nperiods );
-
 
 int16_t *recordingBuffer; //[MAX_SAMPLES * 2];
 
@@ -35,9 +36,10 @@ int fullScreen = 0;
 int buttonsEnabled = 0;
 int displayUsage = 0;
 char recdir[1024] = {0};
+char lastRecordedText[1024] = {0};
 
 #ifdef __ARMEL__
-void text(const char *message, int x, int y);
+void text(const char *message, int x, int y, SDL_Color &col);
 
 struct ButtonMap {
     int gpio;
@@ -111,7 +113,7 @@ void mapButtons() {
 
 void drawButtons() {
     for (int i = 0; buttons[i].label != 0; i++) {
-        text(buttons[i].label, buttons[i].x, buttons[i].y);
+        text(buttons[i].label, buttons[i].x, buttons[i].y, white);
     }
 }
 #else
@@ -191,6 +193,14 @@ sigterm_handler( int signal )
 	quit = 1;
 }
 
+void sigchld_handler( int signal )
+{
+    int status;
+
+    pid_t pid = wait(&status);
+    printf("Finished with %d: %d\n", pid, status);
+}
+
 int recording = 0;
 int recordingRoomNoise = 0;
 int recordFd = 0;
@@ -199,6 +209,8 @@ char filename[1024] = {0};
 int firstSample = 0;
 int lastSample = 0;
 
+cmd_ln_t *config = NULL;
+
 TTF_Font *filenameFont;
 
 int segmentNo = 0;
@@ -206,9 +218,10 @@ struct tm *sessionTime;
 
 
 SDL_Color white = {255, 255, 255};
+SDL_Color green = {0, 255, 0};
+SDL_Color yellow = {255, 180, 0};
 
 int noiseFloor = 0;
-
 
 bool dirExists(const char *path) {
     DIR *dir = opendir(path);
@@ -219,9 +232,41 @@ bool dirExists(const char *path) {
     return true;
 }
 
+bool fileExists(const char *path) {
+    return (access(path, F_OK) != -1);
+}
+
+bool loadText(const char *f) {
+    int pos = 0;
+    FILE *file = fopen(f, "r");
+    if (!file) {
+        lastRecordedText[0] = 0;
+        return false;
+    }
+    int c;
+    while ((c = fgetc(file)) != -1) {
+        if (c == '\n') c = ' ';
+        if (c == '\r') c = ' ';
+        lastRecordedText[pos++] = c;
+        lastRecordedText[pos] = 0;
+    }
+    fclose(file);
+    return true;
+}
+
+bool loadSegmentText() {
+    char temp[1024];
+    if (recdir[0] == 0) return false;
+    if (filename[0] == 0) return false;
+    sprintf(temp, "%s/%s/segment-%04d.txt", recdir, filename, segmentNo);
+    if (fileExists(temp)) {
+        return loadText(temp);
+    }
+    return false;
+}
 
 void initSDL() {
-    atexit(SDL_Quit);
+//    atexit(SDL_Quit);
 
     SDL_SetHintWithPriority(SDL_HINT_NO_SIGNAL_HANDLERS, "1", SDL_HINT_OVERRIDE);
 
@@ -274,8 +319,8 @@ void clearScreen() {
     SDL_FillRect(_display, NULL, 0xFF000000);
 }
 
-void text(const char *message, int x, int y) {
-	SDL_Surface *fn = TTF_RenderText_Blended(filenameFont, message, white);
+void text(const char *message, int x, int y, SDL_Color &col) {
+	SDL_Surface *fn = TTF_RenderText_Blended(filenameFont, message, col);
 	SDL_Rect r;
 	r.x = x;
 	r.y = y;
@@ -363,20 +408,32 @@ void displaySummary() {
         
     }
 
+    if (loadSegmentText()) {
+        if (lastRecordedText[0] != 0) {
+            int offset = strlen(lastRecordedText) - 45;
+            if (offset < 0) offset = 0;
+            text(&lastRecordedText[offset], 20, 20, green);
+        }
+    } else {
+        if (!recording) {
+            text("[Processing...]", 20, 20, yellow);
+        }
+    }
+
 
     sprintf(temp, "Session: %s", filename);
-    text(temp, 20, 50);
+    text(temp, 20, 50, white);
     sprintf(temp, "Segments: %d", segmentNo);
-    text(temp, 20, 70);
+    text(temp, 20, 70, white);
     sprintf(temp, "Noise floor: %d", noiseFloor);
-    text(temp, 20, 90);
+    text(temp, 20, 90, white);
 
-    text("Press N to record room noise", 20, 110);
-    text("Press C to combine session to WAV", 20, 130);
-    text("Press R to record a new segment", 20, 150);
-    text("Press D to delete last segment", 20, 170);
-    text("Press P to add a marker pulse", 20, 190);
-    text("Press Q to quit", 20, 210);
+    text("Press N to record room noise", 20, 110, white);
+    text("Press C to combine session to WAV", 20, 130, white);
+    text("Press R to record a new segment", 20, 150, white);
+    text("Press D to delete last segment", 20, 170, white);
+    text("Press P to add a marker pulse", 20, 190, white);
+    text("Press Q to quit", 20, 210, white);
 
 //    updateScreen();
 }
@@ -412,7 +469,7 @@ void recordRoomNoise() {
 
 	SDL_FillRect(_display, NULL, 0xFFFF0000);
 
-	text("Recording Room Noise. Be Silent!", 20, 20);
+	text("Recording Room Noise. Be Silent!", 20, 20, white);
 	
     SDL_Delay(100); // Little delay to avoid recording the click.
 
@@ -426,7 +483,7 @@ void startRecording() {
 
     if (noiseFloor == 0) {
         clearScreen();
-        text("No room noise recorded!", 20, 20);
+        text("No room noise recorded!", 20, 20, white);
         updateScreen();
         return;
     }
@@ -442,7 +499,7 @@ void startRecording() {
 	sprintf(temp, "Segment %d", segmentNo);
 
 	SDL_FillRect(_display, NULL, 0xFFFF0000);
-	text(temp, 20, 20);
+	text(temp, 20, 20, white);
 
 	updateScreen();
 	recording = 1;
@@ -474,6 +531,42 @@ void loadRoomNoise() {
 
     noiseFloor *= 10;
     noiseFloor /= 9;
+}
+
+void processSpeech(const char *f) {
+
+    ps_decoder_t *ps = NULL;
+    ps = ps_init(config);
+
+    if (!ps) {
+        printf("Error initialising speech system\n");
+        exit(10);
+    }
+    ps_start_utt(ps);
+
+    int s = 0;
+    int i = 0;
+
+    int nsamp = samples / 3;
+
+    int16_t *buf = (int16_t *)alloca(nsamp * 2);
+
+    while (s < samples) {
+        int16_t sval = recordingBuffer[s * 2];
+        s += 3;
+        buf[i++] = sval; 
+    }
+    ps_process_raw(ps, buf, nsamp, FALSE, FALSE);
+
+    ps_end_utt(ps);
+
+    int score = 0;
+    const char *out = ps_get_hyp(ps, &score);
+
+    FILE *tf = fopen(f, "w");
+    fputs(out, tf);
+    fclose(tf);
+    ps_free(ps);
 }
 
 void stopRecording() {
@@ -550,8 +643,18 @@ void stopRecording() {
 
 	close(recordFd);
    // displaySummary();
+    
+    if (!recordingRoomNoise) {
+        if (fork() == 0) {
+            sprintf(temp, "%s/%s/segment-%04d.txt", recdir, filename, segmentNo);
+            processSpeech(temp);
+            exit(0);
+        }
+    } 
+
 	clearScreen();
 	updateScreen();
+
 	samples = 0;
 	recordingRoomNoise = 0;
 	recording = 0;
@@ -588,7 +691,9 @@ void doRecording() {
 
 void undoRecording() {
 	char temp[1024];
-	sprintf(temp, "%s/%s/segment-%4d.wav", recdir, filename, segmentNo);
+	sprintf(temp, "%s/%s/segment-%04d.wav", recdir, filename, segmentNo);
+	unlink(temp);
+	sprintf(temp, "%s/%s/segment-%04d.txt", recdir, filename, segmentNo);
 	unlink(temp);
 	if (segmentNo > 0) {
 		segmentNo--;
@@ -619,7 +724,7 @@ int appendFile(int fd, const char *fn) {
 
 void combineSession() {
 	clearScreen();
-	text("Combining session...", 20, 20);
+	text("Combining session...", 20, 20, white);
 	updateScreen();
 
 	char temp[1024];
@@ -671,7 +776,7 @@ void combineSession() {
 	close(masterFd);
 
 	clearScreen();
-	text("Combining complete.", 20, 20);
+	text("Combining complete.", 20, 20, white);
 	updateScreen();
 }
 
@@ -683,7 +788,7 @@ void reopenSession() {
 
     char temp[1024];
     sprintf(temp, "%s/%s/segment-%04d.wav", recdir, filename, segmentNo);
-    while (access(temp, F_OK) != -1) {
+    while (fileExists(temp)) {
         segmentNo++;
         sprintf(temp, "%s/%s/segment-%04d.wav", recdir, filename, segmentNo);
     }
@@ -732,6 +837,9 @@ int main (int argc, char *argv[]) {
     extern int optind, optopt;
     int errflg=0;
     int c;
+
+    time_t ts = time(NULL);
+
 
     while ((c = getopt(argc, argv, "hbfd:n:r:R:")) != -1) {
         switch(c) {
@@ -784,7 +892,7 @@ int main (int argc, char *argv[]) {
         char temp[1024];
         sprintf(temp, "%s/%s/room-noise.wav", recdir, filename);
         int fd;
-        if (access(temp, F_OK) != -1) {
+        if (fileExists(temp)) {
             reopenSession();
         }
     } else {
@@ -796,12 +904,27 @@ int main (int argc, char *argv[]) {
         }
     }
 
+
+    config = cmd_ln_init(NULL, ps_args(), TRUE,
+		         "-hmm", "/usr/share/sphinx-voxforge-en/hmm/voxforge_en_sphinx.cd_cont_3000/",
+	             "-lm", "/usr/share/sphinx-voxforge-en/lm/voxforge_en_sphinx.cd_cont_3000/voxforge_en_sphinx.lm.DMP",
+	             "-dict", "/usr/share/sphinx-voxforge-en/lm/voxforge_en_sphinx.cd_cont_3000/voxforge_en_sphinx.dic",
+	             NULL);
+
+    if (!config) {
+        printf("Error creating speech config\n");
+        exit(10);
+    }
+
+
+
     alsa_handle = open_audiofd( alsa_device, 1, sample_rate, num_channels, period_size, num_periods);
     if( alsa_handle == 0 )
 	exit(20);
 
     signal( SIGTERM, sigterm_handler );
     signal( SIGINT, sigterm_handler );
+    signal( SIGCHLD, sigchld_handler );
 
     if (buttonsEnabled) {
         initButtons();
@@ -865,8 +988,9 @@ int main (int argc, char *argv[]) {
 								recordRoomNoise();
 							break;
 						case SDLK_r:
-							if (recording)
+							if (recording) {
 								stopRecording();
+                            }
 							break;
 					}
 				}
@@ -877,6 +1001,16 @@ int main (int argc, char *argv[]) {
 	doRecording();
 
 	SDL_Delay(1);
+
+    if (!recording) {
+        if (time(NULL) - ts >= 1) {
+            ts = time(NULL);
+            clearScreen();
+            updateScreen();
+        }
+    }
+
+
     }
 
 	if (recording) {
@@ -885,6 +1019,8 @@ int main (int argc, char *argv[]) {
 
 
 	SDL_DestroyWindow(_window);
+
+    SDL_Quit();
 
     exit (0);
 }
